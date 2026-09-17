@@ -1,0 +1,66 @@
+# Small end-to-end smoke-test configuration.
+#
+# Used by `scripts/run_smoke_test.sh` and the test suite. It keeps the exact
+# algorithm of `mainline.yaml` but shrinks every expensive dimension so that a
+# full pretrain -> atoms -> window-predictor run finishes on a CPU in seconds.
+schema_version: 1
+name: flowatom_smoke
+
+encoder:
+  representation: signed_payload_length
+  input_length: 32
+  minimum_nonzero_payload_packets: 3
+
+pretraining:
+  feature_dim: 16
+  queue_size: 256
+  momentum: 0.999
+  temperature: 0.07
+  epochs: 4
+  batch_size: 32
+  learning_rate: 0.03
+  momentum_sgd: 0.9
+  weight_decay: 0.0001
+  schedule: [60, 80]
+  augmentation: copyrto
+  workers: 0
+  seed: 2025
+
+atom_vocabulary:
+  clusters: 64
+  minimum_cluster_size: 2
+  embedding_scaling: false
+  kmeans_n_init: 2
+  kmeans_batch_size: 256
+  xgb_sample_size: 512
+  xgboost:
+    n_estimators: 10
+    max_depth: 3
+    learning_rate: 0.2
+    subsample: 0.9
+    colsample_bytree: 0.9
+  seed: 2025
+
+window:
+  confidence_threshold: 0.0
+  max_websites_per_window: 5
+
+predictor:
+  hidden_dim: 64
+  dropout: 0.1
+  epochs: 30
+  patience: 5
+  batch_size: 32
+  learning_rate: 0.005
+  weight_decay: 0.0001
+  seeds: [2025]
+
+closed_world:
+  train_samples: 200
+  validation_samples: 50
+  test_samples: {1: 10, 2: 10, 3: 10, 4: 10, 5: 10}
+
+open_world:
+  samples_per_cell: 6
+  monitored_counts: [1, 2, 3]
+  background_counts: [0, 1, 2]

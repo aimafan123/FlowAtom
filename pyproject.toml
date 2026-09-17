@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flowatom"
+version = "1.0.0"
+description = "FlowAtom: Atom-based evidence aggregation for multi-label website fingerprinting"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Chongru Fan" },
+]
+keywords = [
+  "website-fingerprinting",
+  "encrypted-traffic",
+  "multi-label",
+  "multi-instance-learning",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "numpy>=1.23",
+  "pandas>=1.5",
+  "pyarrow>=10",
+  "scikit-learn>=1.2",
+  "scipy>=1.9",
+  "joblib>=1.2",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+ml = ["torch>=2.0"]
+atoms = ["xgboost>=2.0"]
+dev = ["pytest>=7"]
+all = [
+  "torch>=2.0",
+  "xgboost>=2.0",
+  "pytest>=7",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

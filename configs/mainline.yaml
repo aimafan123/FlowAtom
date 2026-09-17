@@ -1,0 +1,70 @@
+# FlowAtom paper configuration.
+#
+# Every value below matches the configuration used for the paper experiments.
+# Scripts accept `--config configs/mainline.yaml`; command-line flags override
+# individual values so that ablations (e.g. Atom count or flow budget) can be
+# run without editing this file.
+schema_version: 1
+name: flowatom_mainline
+
+encoder:
+  representation: signed_payload_length
+  input_length: 300
+  minimum_nonzero_payload_packets: 10
+
+pretraining:
+  feature_dim: 128
+  queue_size: 65536
+  momentum: 0.999
+  temperature: 0.07
+  epochs: 45
+  batch_size: 8192
+  learning_rate: 0.03
+  momentum_sgd: 0.9
+  weight_decay: 0.0001
+  schedule: [60, 80]
+  augmentation: copyrto
+  workers: 16
+  seed: 2025
+
+atom_vocabulary:
+  clusters: 1200
+  minimum_cluster_size: 50
+  embedding_scaling: false
+  kmeans_n_init: 3
+  kmeans_batch_size: 8192
+  xgb_sample_size: 100000
+  xgboost:
+    n_estimators: 100
+    max_depth: 4
+    learning_rate: 0.1
+    subsample: 0.8
+    colsample_bytree: 0.8
+  seed: 2025
+
+window:
+  # A flow contributes an Atom response only when its maximum Atom score
+  # reaches this value. The paper mainline keeps every flow (threshold 0.0).
+  confidence_threshold: 0.0
+  max_websites_per_window: 5
+
+predictor:
+  hidden_dim: 512
+  dropout: 0.2
+  epochs: 60
+  patience: 10
+  batch_size: 512
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  seeds: [2025, 2026, 2027, 2028, 2029]
+
+closed_world:
+  # Number of mixed windows generated per website-set size.
+  train_samples: 15000
+  validation_samples: 1500
+  test_samples: {1: 200, 2: 100, 3: 80, 4: 60, 5: 40}
+
+open_world:
+  samples_per_cell: 500
+  monitored_counts: [1, 2, 3, 4, 5]
+  background_counts: [1, 2, 3, 4, 5]

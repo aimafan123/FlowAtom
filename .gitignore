@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# Virtual environments
+.venv/
+venv/
+.env
+
+# Generated datasets, caches, checkpoints and experiment outputs.
+data/raw/
+data/processed/
+data/generated/
+cache/
+checkpoints/
+runs/
+artifacts/
+
+# Binary artifacts
+*.npy
+*.npz
+*.pt
+*.pth
+*.pth.tar
+*.parquet
+*.pkl
+*.joblib
+
+.DS_Store
