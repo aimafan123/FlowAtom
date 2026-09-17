@@ -12,6 +12,3 @@ torch>=2.0
 
 # Atom mapper (gradient-boosted trees).
 xgboost>=2.0
-
-# Development / testing.
-pytest>=7

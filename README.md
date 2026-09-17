@@ -29,7 +29,6 @@ src/flowatom/       Reusable implementation
   data/               Trace schema, window specifications and validation
   evaluation/         Micro-F1 metrics and threshold decoding
   training/           Window-set predictor training and frozen evaluation
-tests/              Unit, parity and end-to-end tests
 ```
 
 ## Method in one page
@@ -84,12 +83,6 @@ PYTHON=.venv/bin/python bash scripts/run_smoke_test.sh
 Artifacts are written to `artifacts/smoke/`. The run takes well under a minute
 on a CPU and prints `SMOKE TEST PASSED` at the end. The synthetic numbers are
 only a plumbing check; use the real datasets for meaningful accuracy.
-
-Run the unit and integration tests with:
-
-```bash
-PYTHONPATH=src pytest -q
-```
 
 ## Reproducing the paper
 

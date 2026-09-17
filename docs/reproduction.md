@@ -248,5 +248,4 @@ python scripts/build_atom_vocabulary.py \
 - Standardization parameters come from training windows only.
 - Sampling of flows for the flow-budget ablation is deterministic per trace.
 - The synthetic smoke test uses the same code paths as the real pipeline, so a
-  passing smoke test plus a green test suite validates the plumbing before
-  launching a full campaign.
+  passing smoke test validates the plumbing before launching a full campaign.
