@@ -20,7 +20,10 @@ x_i = [ abs(l_1) * s_1, abs(l_2) * s_2, ..., abs(l_n) * s_n ]
 
 where `s_j ∈ {+1, -1}` is the packet direction. Sequences are truncated or
 right-padded with zeros to `L = 300`, and flows with fewer than 10 nonzero
-payload packets are discarded.
+payload packets are discarded. Filtering happens before any per-trace flow
+budget is applied. Traces with no eligible flows keep their ID and label and
+receive an all-zero Atom response vector; they are not removed from evaluation.
+Malformed packet/flow alignment still raises an error.
 
 A DF-mini convolutional encoder `E` maps the sequence to a flat embedding
 `z_i = E(x_i)`. The encoder has three convolutional blocks (16, 32, 64
@@ -48,8 +51,13 @@ Implementation: `flowatom.representation`, `flowatom.models.DFMiniEncoder`,
 
 ## 2. Atom construction
 
-For a target traffic scenario, the frozen encoder embeds every flow of the
-**training split** (website labels are not used):
+First generate closed-world specs, including explicit, disjoint `trace_pools`
+for training, validation and testing. For each website, at least two original
+training traces are required: 90% (rounded down, at least one) enter the training
+pool and the rest enter validation. Atom construction requires these specs and
+embeds only eligible flows from the **training pool**. Validation and test traces
+are excluded from clustering and mapper fitting. Website labels are used to
+stratify the split, but are never Atom training targets:
 
 1. Optionally standardize the embeddings. The paper mainline uses raw
    embeddings (`embedding_scaling: false`).
@@ -145,7 +153,9 @@ never part of the model input.
 
 **Closed world.** Single-website visit traces are split into disjoint training,
 validation and test sets. Windows are built offline by mixing complete traces
-within a split, with `m ∈ {1, 2, 3, 4, 5}` distinct monitored websites. The same
+within a split, with `m ∈ {1, 2, 3, 4, 5}` distinct monitored websites.
+The default 15,000 training and 1,500 validation windows are totals across
+the five sizes (3,000 and 300 per size respectively). The same
 source-trained model is evaluated on every window size.
 
 **Open world.** Background (unmonitored) traffic is added to windows that

@@ -7,6 +7,7 @@ from flowatom.data.mixtures import (
     load_specs,
     save_specs,
     validate_specs,
+    validate_trace_pools,
 )
 from flowatom.data.traces import (
     ALLOWED_SPLITS,
@@ -33,5 +34,6 @@ __all__ = [
     "save_specs",
     "save_trace_frame",
     "validate_specs",
+    "validate_trace_pools",
     "validate_trace_frame",
 ]

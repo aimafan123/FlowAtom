@@ -1,53 +1,8 @@
 #!/usr/bin/env python3
-"""Build deterministic closed-world window specifications from traces."""
-
-from __future__ import annotations
-
-import argparse
-import json
-from pathlib import Path
+"""Compatibility wrapper for ``flowatom build-mixture-specs``."""
 
 import _bootstrap  # noqa: F401
-
-from flowatom.config import load_config, section
-from flowatom.data import (
-    build_closed_world_specs,
-    load_trace_frame,
-    save_specs,
-    validate_specs,
-)
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--traces", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--config", type=Path, default=None)
-    parser.add_argument("--seed", type=int, default=2025)
-    parser.add_argument("--train-samples", type=int, default=None)
-    parser.add_argument("--validation-samples", type=int, default=None)
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    closed = section(config, "closed_world")
-    test_counts = {int(key): int(value) for key, value in dict(closed["test_samples"]).items()}
-    frame = load_trace_frame(args.traces)
-    specs = build_closed_world_specs(
-        frame,
-        seed=args.seed,
-        train_samples=args.train_samples
-        if args.train_samples is not None
-        else int(closed["train_samples"]),
-        validation_samples=args.validation_samples
-        if args.validation_samples is not None
-        else int(closed["validation_samples"]),
-        test_counts=test_counts,
-    )
-    summary = validate_specs(specs, frame)
-    save_specs(specs, args.output)
-    print(json.dumps({"output": str(args.output), **summary}, indent=2))
-    return 0
-
+from flowatom.cli.build_mixture_specs import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -1,251 +1,179 @@
-# Reproducing the paper
+# Reproduction guide
 
-This guide maps every paper experiment to commands in this repository. All
-commands assume the repository root as the working directory and
-`PYTHONPATH=src` (the scripts bootstrap it automatically; installing the
-package with `pip install -e .` is also fine).
+Run commands from the repository root after [installation](environment.md).
+The installed `flowatom` command also works outside the checkout when input,
+configuration and output paths are supplied explicitly.
 
-## 1. Environment
+## 1. Prepare data and an encoder
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-```
+Convert capture data to the [trace parquet schema](data_format.md). Use globally
+unique trace IDs; background sites and IDs must not overlap monitored data.
+Neither website boundaries nor true set size are predictor inputs.
 
-A CUDA GPU is recommended for pretraining and embedding extraction. Pass
-`--device cuda:0` where supported, or use the default `auto`.
-
-## 2. Data used in the paper
-
-| Role | Source | Size |
-| --- | --- | --- |
-| Pretraining (unlabeled) | JP-MAWI traffic | 1,000,000 flows |
-| Monitored websites | Tranco Top 10K | 100 websites |
-| Traffic scenarios | Direct HTTPS, Trojan, VMess | per-scenario visit traces |
-| Background (open world) | Unmonitored websites from the same list | 1 visit trace each |
-| Spatial drift | Direct captures from `au, de, jp, sg, za` | inference only |
-| Temporal drift | Direct captures from five monthly dates | inference only |
-
-Pretraining and monitored traffic are disjoint. Monitored websites are
-excluded from the open-world background pool.
-
-Convert your captures into the trace parquet described in
-[`data_format.md`](data_format.md). The essential requirements are:
-
-- one row per visit trace with a globally unique `trace_id`;
-- `split ∈ {train, test}` with disjoint trace sets;
-- nested `payload_flows` and `direction_flows` with aligned packet lengths;
-- no IP addresses, DNS names or SNI in the model input;
-- `label = -1` and `site = "background-*"` for unmonitored traces.
-
-The paper splits single-website visit traces into train, validation and test
-trace sets, then builds windows offline. `scripts/build_mixture_specs.py`
-implements exactly this split: 90% of each website's training traces form the
-training pool, the remaining 10% form the validation pool, and test traces are
-disjoint from both.
-
-## 3. Pretrain the flow encoder
+If a compatible external encoder is available, pass it directly to the runner.
+Record the encoder's pretraining provenance and checksum. Otherwise, pretrain
+one on a disjoint external traffic dataset:
 
 ```bash
-python scripts/materialize_pretraining_shards.py \
-  --input data/raw/pretraining/jp_mawi/signed_length_L300.parquet \
+flowatom materialize-pretraining-shards \
+  --input data/raw/pretraining/signed_length_L300.parquet \
   --output-dir cache/pretraining_shards
-
-python scripts/pretrain_encoder.py \
+flowatom pretrain-encoder \
   --manifest cache/pretraining_shards/manifest.json \
   --output-dir checkpoints/encoder \
-  --config configs/mainline.yaml \
-  --workers 16 --device cuda:0
+  --config configs/mainline.yaml --seed 2025 --workers 16 --device cuda:0
 ```
 
-The frozen encoder is `checkpoints/encoder/encoder.pth.tar`. It is shared
-across the three traffic scenarios.
+The output checkpoint is `checkpoints/encoder/encoder.pth.tar`. Its input length
+and representation must match downstream extraction. The mainline uses signed
+payload length, length 300, and at least 10 nonzero payload packets per flow.
+The same frozen external encoder may be shared across traffic scenarios;
+scenario-specific Atoms and predictors are built independently.
 
-## 4. Closed-world experiments (Table 1)
-
-For each scenario `direct`, `trojan`, `vmess`:
-
-```bash
-SCENARIO=direct        # or trojan / vmess
-TRACES=data/processed/closed_world/${SCENARIO}/traces.parquet
-
-# 4.1 Scenario-specific Atoms from the unlabeled training split.
-python scripts/build_atom_vocabulary.py \
-  --traces "$TRACES" --encoder checkpoints/encoder/encoder.pth.tar \
-  --output-dir checkpoints/atom_vocabulary/${SCENARIO} \
-  --config configs/mainline.yaml --device cuda:0
-
-# 4.2 Per-trace Atom responses.
-python scripts/build_trace_atoms.py \
-  --traces "$TRACES" --encoder checkpoints/encoder/encoder.pth.tar \
-  --vocabulary checkpoints/atom_vocabulary/${SCENARIO} \
-  --output cache/${SCENARIO}/trace_atoms.npz \
-  --config configs/mainline.yaml --device cuda:0
-
-# 4.3 Windows and five training seeds.
-python scripts/build_mixture_specs.py \
-  --traces "$TRACES" --output specs/${SCENARIO}/closed_world.json \
-  --config configs/mainline.yaml
-
-for seed in 2025 2026 2027 2028 2029; do
-  python scripts/train_window_predictor.py \
-    --specs specs/${SCENARIO}/closed_world.json \
-    --atoms cache/${SCENARIO}/trace_atoms.npz \
-    --output-dir runs/${SCENARIO}/seed${seed} \
-    --config configs/mainline.yaml --seed ${seed} --device cuda:0
-done
-
-python scripts/summarize_results.py \
-  --runs-root runs/${SCENARIO} --output runs/${SCENARIO}/summary_overall.json
-```
-
-`metrics.json` reports Micro-F1 for each window size `m ∈ {1, ..., 5}` under
-`test`; `summary_overall.json` aggregates the overall value over seeds.
-
-### Reported closed-world Micro-F1 (%)
-
-| Scenario | m=1 | m=2 | m=3 | m=4 | m=5 |
-| --- | --- | --- | --- | --- | --- |
-| Direct HTTPS | 99.35 | 98.76 | 96.71 | 97.70 | 96.78 |
-| Trojan | 95.57 | 96.26 | 95.00 | 92.37 | 93.08 |
-| VMess | 94.53 | 93.83 | 94.58 | 93.66 | 92.86 |
-
-## 5. Open-world experiments (Fig. 3)
-
-Background traffic is used for testing only.
+## 2. One scenario, one downstream seed
 
 ```bash
-# 5.1 Atom responses for unmonitored background traces.
-python scripts/build_trace_atoms.py \
-  --traces data/processed/open_world/background/traces.parquet \
+flowatom run \
+  --traces data/processed/direct/traces.parquet \
+  --background-traces data/processed/background/traces.parquet \
   --encoder checkpoints/encoder/encoder.pth.tar \
-  --vocabulary checkpoints/atom_vocabulary/${SCENARIO} \
-  --output cache/${SCENARIO}/background_trace_atoms.npz \
-  --config configs/mainline.yaml --device cuda:0
+  --output-dir runs/direct/seed2025 \
+  --config configs/mainline.yaml --seed 2025 --device cuda:0
+```
 
-# 5.2 Target-present windows: m in 1..5 and b in 1..5, 500 windows per cell.
-python scripts/build_open_world_specs.py \
-  --monitored-traces data/processed/closed_world/${SCENARIO}/traces.parquet \
-  --background-traces data/processed/open_world/background/traces.parquet \
-  --source-specs specs/${SCENARIO}/closed_world.json \
-  --output specs/${SCENARIO}/open_world.json --config configs/mainline.yaml
+Omit the background argument for closed world only. The runner validates
+background disjointness before fitting models. `--dry-run` prints commands
+without writing files. Each actual run uses a new or empty output directory.
+It snapshots the resolved YAML, sets downstream seeds explicitly, invokes the
+same stage commands used by the source scripts, and stops at the first error.
 
-# 5.3 Frozen evaluation with the source-validation threshold.
-for seed in 2025 2026 2027 2028 2029; do
-  python scripts/evaluate_frozen.py \
-    --source-run runs/${SCENARIO}/seed${seed} \
-    --evaluation-specs specs/${SCENARIO}/open_world.json \
-    --atoms cache/${SCENARIO}/trace_atoms.npz \
-    --atoms cache/${SCENARIO}/background_trace_atoms.npz \
-    --output runs/${SCENARIO}/seed${seed}/open_world.json --mode open_world
+```text
+runs/direct/seed2025/
+  manifest.json              Inputs/code/config fingerprints, environment, stage status
+  config.yaml                Resolved configuration used by the stages
+  logs/                      One log per stage
+  closed_world_specs.json    Trace pools and training/validation/test windows
+  vocabulary/                Atom mapper and provenance
+  trace_atoms.npz             Monitored trace responses
+  predictor/                 Model, standardizer, metrics and artifact manifest
+  background_atoms.npz       Present when background was supplied
+  open_world_specs.json      Target-present open-world windows
+  open_world_metrics.json    Frozen open-world metrics
+```
+
+Check `manifest.json.status == "completed"` before using a run. Failure and
+interruption states retain logs and partial artifacts. The runner does not
+resume or overwrite partial runs automatically. For stage-level work, use
+[the CLI reference](../scripts/README.md).
+
+## 3. Repeat complete downstream runs across seeds
+
+This loop repeats splitting, Atom fitting, feature extraction, predictor
+training and evaluation for every scenario/seed pair:
+
+```bash
+for scenario in direct trojan vmess; do
+  for seed in 2025 2026 2027 2028 2029; do
+    flowatom run \
+      --traces "data/processed/${scenario}/traces.parquet" \
+      --background-traces data/processed/background/traces.parquet \
+      --encoder checkpoints/encoder/encoder.pth.tar \
+      --output-dir "runs/${scenario}/seed${seed}" \
+      --config configs/mainline.yaml --seed "$seed" --device cuda:0
+  done
+  flowatom summarize-results --runs-root "runs/${scenario}" \
+    --pattern 'seed*/predictor/metrics.json' \
+    --output "runs/${scenario}/closed_summary.json"
+  flowatom summarize-results --runs-root "runs/${scenario}" \
+    --pattern 'seed*/open_world_metrics.json' \
+    --output "runs/${scenario}/open_summary.json"
 done
 ```
 
-Each output file contains `overall` and per-cell groups named `m/b`
-(e.g. `2/5`). Pooling `m ∈ {2, ..., 5}` at `b = 5` gives the values below.
+The encoder remains fixed in this loop. To include encoder-pretraining
+variation, train and pass a seed-specific external encoder for each seed and
+record that change explicitly. The loop defines a reproducible experiment for
+this revision; it does not establish equivalence to every historical paper run.
+Changing only the predictor seed while sharing one vocabulary is a narrower
+experiment and should be reported as such.
 
-### Reported open-world Micro-F1 (%) at b = 5, pooled m = 2–5
+`summary` uses the sample standard deviation (`ddof=1`). For one run, the
+standard deviation is `null` because it cannot be estimated from one sample.
+Closed-world metrics contain per-size groups `1` through `5`; use `--group 3`
+for a specific window size. Keep scenarios and experimental settings separate
+when aggregating runs.
 
-| Direct HTTPS | Trojan | VMess |
-| --- | --- | --- |
-| 90.58 | 91.70 | 88.42 |
+## 4. Open-world evaluation and the paper subset
 
-The abstract reports the corresponding headline open-world scores of 92.37,
-92.64 and 89.85 across the tested open-world settings.
+The mainline open-world grid has monitored set size `m=1..5` and background
+trace count `b=1..5`, with 500 windows per cell. It is target-present evaluation,
+not a background-only rejection test. All three measured scenarios use Direct
+HTTPS background data. Thresholds and maximum decoded set size remain frozen
+from the source run.
 
-## 6. Ablations
-
-### Atom-count parameter `K` (Fig. 4)
-
-Rebuild the vocabulary with a different number of requested clusters, then
-re-extract and retrain. Only the vocabulary and its downstream caches change;
-the encoder is frozen.
+The paper's `b=5, m=2..5` pooled subset can be evaluated without retraining:
 
 ```bash
-for K in 200 400 800 1200 1600 2400; do
-  python scripts/build_atom_vocabulary.py \
-    --traces data/processed/closed_world/direct/traces.parquet \
-    --encoder checkpoints/encoder/encoder.pth.tar \
-    --output-dir checkpoints/atom_vocabulary/direct_K${K} \
-    --config configs/mainline.yaml --clusters ${K}
-  python scripts/build_trace_atoms.py \
-    --traces data/processed/closed_world/direct/traces.parquet \
-    --encoder checkpoints/encoder/encoder.pth.tar \
-    --vocabulary checkpoints/atom_vocabulary/direct_K${K} \
-    --output cache/direct_K${K}/trace_atoms.npz --config configs/mainline.yaml
-  python scripts/train_window_predictor.py \
-    --specs specs/direct/closed_world.json \
-    --atoms cache/direct_K${K}/trace_atoms.npz \
-    --output-dir runs/direct_K${K}/seed2025 \
-    --config configs/mainline.yaml --seed 2025
-done
+python - <<'PYCODE'
+import json
+from pathlib import Path
+run = Path("runs/direct/seed2025")
+specs = json.loads((run / "open_world_specs.json").read_text())
+specs["test"] = [w for w in specs["test"]
+                 if w["background_traces_num"] == 5
+                 and w["monitored_websites_num"] in (2, 3, 4, 5)]
+(run / "open_world_paper_subset.json").write_text(json.dumps(specs, indent=2))
+PYCODE
+flowatom evaluate-frozen \
+  --source-run runs/direct/seed2025/predictor \
+  --evaluation-specs runs/direct/seed2025/open_world_paper_subset.json \
+  --atoms runs/direct/seed2025/trace_atoms.npz \
+  --atoms runs/direct/seed2025/background_atoms.npz \
+  --output runs/direct/seed2025/open_world_paper_metrics.json \
+  --mode open_world --device cuda:0
 ```
 
-### Flow budget `k` per visit trace (Fig. 5)
+Read `overall.micro_f1` from the subset result. Do not average the per-cell
+F1 values: pooled Micro-F1 combines the underlying predictions across windows.
 
-Limit the flows retained per trace during Atom extraction. Sampling is
-deterministic per trace (`seed + trace_id`), so the same budget always selects
-the same flows.
+## 5. Drift and ablations
 
-```bash
-for k in 1 2 4 8 16; do
-  python scripts/build_trace_atoms.py \
-    --traces data/processed/closed_world/direct/traces.parquet \
-    --encoder checkpoints/encoder/encoder.pth.tar \
-    --vocabulary checkpoints/atom_vocabulary/direct \
-    --output cache/direct_k${k}/trace_atoms.npz \
-    --config configs/mainline.yaml --max-flows-per-trace ${k}
-  python scripts/train_window_predictor.py \
-    --specs specs/direct/closed_world.json \
-    --atoms cache/direct_k${k}/trace_atoms.npz \
-    --output-dir runs/direct_k${k}/seed2025 \
-    --config configs/mainline.yaml --seed 2025
-done
-```
+For drift data, extract trace responses with the **source** encoder and
+vocabulary, then call `flowatom evaluate-frozen` with the source predictor and
+target window specs. Use `--mode closed_world` for known monitored labels or
+`--mode open_world` for target-present windows with background. Target labels
+must use the source label mapping. Do not fit another standardizer or select a
+new threshold on the target data. Raw target window generation and real drift
+captures are not bundled.
 
-The all-flow setting corresponds to no `--max-flows-per-trace` argument.
+For Atom count or other hyperparameters, copy `configs/mainline.yaml`, edit the
+relevant field (for example `atom_vocabulary.clusters`), and run a fresh complete
+experiment with `--config` pointing to that file. Keep the encoder and dataset
+fixed when studying that parameter. The runner stores the resolved configuration.
 
-### Encoder source
-
-The mainline uses an encoder pretrained on external unlabeled traffic. To
-measure the contribution of that pretraining, replace the encoder checkpoint
-with a randomly initialized one and repeat steps 4.1–4.3:
+Flow-budget ablations use the stage commands because the full runner keeps all
+eligible flows:
 
 ```bash
-PYTHONPATH=src python - <<'PY'
-import torch
-from flowatom.models import DFMiniEncoder
-
-torch.manual_seed(2025)
-model = DFMiniEncoder(input_length=300)
-torch.save(model.state_dict(), "checkpoints/encoder_random.pt")
-PY
-```
-
-`load_pretrained_encoder` also accepts a plain feature state dictionary, so
-`checkpoints/encoder_random.pt` can be passed through `--encoder` directly.
-
-### Shared Atoms from pretraining traffic
-
-To build Atoms from external unlabeled traffic instead of the target-protocol
-training split:
-
-```bash
-python scripts/build_atom_vocabulary.py \
-  --pretraining-parquet data/raw/pretraining/jp_mawi/signed_length_L300.parquet \
+flowatom build-trace-atoms \
+  --traces data/processed/direct/traces.parquet \
   --encoder checkpoints/encoder/encoder.pth.tar \
-  --output-dir checkpoints/atom_vocabulary/shared \
-  --config configs/mainline.yaml
+  --vocabulary runs/direct/seed2025/vocabulary \
+  --output cache/direct_k4.npz --config configs/mainline.yaml \
+  --max-flows-per-trace 4 --flow-sampling-seed 2025 --device cuda:0
+flowatom train-window-predictor \
+  --specs runs/direct/seed2025/closed_world_specs.json \
+  --atoms cache/direct_k4.npz --output-dir runs/direct_k4/seed2025 \
+  --config configs/mainline.yaml --seed 2025 --device cuda:0
 ```
 
-## 7. Reproducibility checklist
+Sampling takes place after short-flow filtering. Re-extract background caches
+with the same budget before open-world evaluation. The feature contract rejects
+mixing all-flow and budgeted caches.
 
-- Fix `--seed` for every run; the paper uses `2025, 2026, 2027, 2028, 2029`.
-- `metrics.json` records the resolved configuration, the best epoch, the
-  validation-selected threshold and `test_used_for_selection: false`.
-- Open-world and drift evaluations record `target_used_for_training: false`
-  and `target_used_for_selection: false`.
-- Standardization parameters come from training windows only.
-- Sampling of flows for the flow-budget ablation is deterministic per trace.
-- The synthetic smoke test uses the same code paths as the real pipeline, so a
-  passing smoke test validates the plumbing before launching a full campaign.
+For an encoder-source ablation, replace the external encoder with a separately
+recorded checkpoint and rebuild the vocabulary and every downstream artifact.
+To fit shared Atoms on external pretraining traffic, use
+`flowatom build-atom-vocabulary --pretraining-parquet ...` and then the individual
+extraction/training commands. Do not present external-pool fitting as the
+scenario-training-pool mainline.

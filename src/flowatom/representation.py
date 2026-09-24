@@ -38,6 +38,8 @@ def payload_direction_sequences(
         raise RepresentationError("payload and direction sequences must align")
     if input_length <= 0:
         raise RepresentationError("input_length must be positive")
+    if min_payload_packets <= 0:
+        raise RepresentationError("min_payload_packets must be positive")
     retained = [
         (int(abs(float(payload))), 1 if float(direction) > 0 else -1)
         for payload, direction in zip(payloads, directions)

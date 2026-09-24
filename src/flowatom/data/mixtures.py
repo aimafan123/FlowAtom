@@ -49,10 +49,15 @@ def _allocate_trace_pools(frame, seed: int):
     train, validation = {}, {}
     for label, group in frame[frame.split == "train"].groupby("label"):
         values = group.trace_id.to_numpy(dtype=np.int64).copy()
+        if len(values) < 2:
+            raise DatasetValidationError(
+                f"label {label} needs at least two training traces for disjoint validation"
+            )
+        values.sort()
         rng.shuffle(values)
         cut = max(1, int(len(values) * 0.9))
         train[int(label)] = values[:cut].tolist()
-        validation[int(label)] = values[cut:].tolist() or values[-1:].tolist()
+        validation[int(label)] = values[cut:].tolist()
     test = {
         int(label): group.sort_values("test_order").trace_id.astype(int).tolist()
         for label, group in frame[frame.split == "test"].groupby("label")
@@ -92,6 +97,8 @@ def build_closed_world_specs(
 ) -> Dict[str, Any]:
     """Build source-only closed-world windows with trace-disjoint splits."""
 
+    if (frame["label"] < 0).any():
+        raise DatasetValidationError("closed-world traces must have monitored labels")
     train_pool, validation_pool, test_pool = _allocate_trace_pools(frame, seed)
     common = sorted(set(train_pool) & set(validation_pool) & set(test_pool))
     if not common:
@@ -103,6 +110,10 @@ def build_closed_world_specs(
     payload = {
         "seed": int(seed),
         "labels": common,
+        "trace_pools": {
+            name: sorted(trace_id for traces in pool.values() for trace_id in traces)
+            for name, pool in zip(SPLIT_NAMES, (train_pool, validation_pool, test_pool))
+        },
         "train": _generate_windows(
             train_pool, {size: train_samples // 5 for size in range(1, 6)}, rng
         ),
@@ -116,6 +127,8 @@ def build_closed_world_specs(
             "source_only_training": True,
             "test_used_for_selection": False,
             "trace_disjoint": True,
+            "atom_fit_split": "train",
+            "validation_used_for_atom_fit": False,
         },
     }
     return payload
@@ -241,6 +254,27 @@ def _validate_window(
     return trace_ids
 
 
+def validate_trace_pools(specs: Mapping[str, Any]) -> Dict[str, set]:
+    """Validate explicit pools and membership before fitting any component."""
+
+    raw = specs.get("trace_pools")
+    if not isinstance(raw, Mapping) or set(raw) != set(SPLIT_NAMES):
+        raise DatasetValidationError("missing trace_pools; rebuild closed-world specs first")
+    pools = {}
+    for name in SPLIT_NAMES:
+        values = [int(value) for value in raw[name]]
+        if not values or len(values) != len(set(values)):
+            raise DatasetValidationError(f"{name} trace pool must be non-empty and unique")
+        pools[name] = set(values)
+        for item in specs[name]:
+            if not set(map(int, item["trace_ids"])).issubset(pools[name]):
+                raise DatasetValidationError(f"{name} window uses a trace outside its pool")
+    for left, right in (("train", "validation"), ("train", "test"), ("validation", "test")):
+        if pools[left] & pools[right]:
+            raise DatasetValidationError(f"trace pool leakage between {left} and {right}")
+    return pools
+
+
 def validate_specs(
     specs: Mapping[str, Any], frame, background_trace_ids: Sequence[int] = ()
 ) -> Dict[str, Any]:
@@ -255,6 +289,15 @@ def validate_specs(
         raise DatasetValidationError("window labels must be unique")
     labels_by_trace = trace_labels(frame)
     splits_by_trace = trace_splits(frame)
+    if "trace_pools" in specs:
+        pools = validate_trace_pools(specs)
+        for name, trace_ids in pools.items():
+            expected = "test" if name == "test" else "train"
+            for trace_id in trace_ids:
+                if trace_id not in labels_by_trace or labels_by_trace[trace_id] not in labels:
+                    raise DatasetValidationError(f"unknown or unmonitored pool trace {trace_id}")
+                if splits_by_trace[trace_id] != expected:
+                    raise DatasetValidationError(f"{name} pool uses trace from {splits_by_trace[trace_id]}")
     background_ids = {int(value) for value in background_trace_ids}
 
     used_traces: Dict[str, set] = {}

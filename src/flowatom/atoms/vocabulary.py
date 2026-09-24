@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Union
 
 import numpy as np
+
+from flowatom.artifacts import file_sha256, fingerprint, require_equal
 
 PathLike = Union[str, Path]
 SCALER_FILE = "scaler.joblib"
@@ -48,6 +50,8 @@ class AtomVocabulary:
     scaler: Optional[Any] = None
     classifier_type: str = "xgboost"
     embedding_dimension: Optional[int] = None
+    provenance: dict = field(default_factory=dict)
+    vocabulary_sha256: str = ""
 
     def __post_init__(self) -> None:
         if self.embedding_dimension is None:
@@ -104,14 +108,22 @@ class AtomVocabulary:
         else:
             centers = np.asarray(self.classifier.centers, dtype=np.float32)
             np.savez_compressed(output_dir / CENTROID_FILE, cluster_centers=centers)
+        names = [XGBOOST_FILE if self.classifier_type == "xgboost" else CENTROID_FILE]
+        if self.scaler is not None:
+            names.append(SCALER_FILE)
+        files = {name: file_sha256(output_dir / name) for name in names}
+        self.vocabulary_sha256 = fingerprint({"files": files, "provenance": self.provenance})
         payload = {
-            "schema_version": 1,
+            **(metadata or {}),
+            "schema_version": 2,
+            "provenance": self.provenance,
+            "files": files,
+            "vocabulary_sha256": self.vocabulary_sha256,
             "classifier_type": self.classifier_type,
             "scaling_enabled": self.scaler is not None,
             "embedding_dimension": self.embedding_dimension,
             "atom_count": self.atom_count,
         }
-        payload.update(metadata or {})
         (output_dir / METADATA_FILE).write_text(json.dumps(payload, indent=2))
         return output_dir
 
@@ -125,7 +137,18 @@ class AtomVocabulary:
         if not metadata_path.is_file():
             raise FileNotFoundError(metadata_path)
         metadata = json.loads(metadata_path.read_text())
+        if metadata.get("schema_version") != 2 or not metadata.get("provenance"):
+            raise AtomVocabularyError("vocabulary has no provenance; rebuild it from split specs")
         classifier_type = str(metadata.get("classifier_type", "xgboost"))
+        if classifier_type not in {"xgboost", "nearest_centroid"}:
+            raise AtomVocabularyError(f"unsupported classifier type: {classifier_type}")
+        names = [XGBOOST_FILE if classifier_type == "xgboost" else CENTROID_FILE]
+        if metadata.get("scaling_enabled", True):
+            names.append(SCALER_FILE)
+        files = {name: file_sha256(output_dir / name) for name in names}
+        require_equal(files, metadata.get("files"), "vocabulary files")
+        identity = fingerprint({"files": files, "provenance": metadata["provenance"]})
+        require_equal(identity, metadata.get("vocabulary_sha256"), "vocabulary identity")
         scaler = None
         if metadata.get("scaling_enabled", True):
             scaler_path = output_dir / SCALER_FILE
@@ -146,4 +169,10 @@ class AtomVocabulary:
                 classifier = NearestCentroidClassifier(saved["cluster_centers"])
         else:
             raise AtomVocabularyError(f"unsupported classifier type: {classifier_type}")
-        return cls(classifier=classifier, scaler=scaler, classifier_type=classifier_type)
+        vocabulary = cls(
+            classifier=classifier, scaler=scaler, classifier_type=classifier_type,
+            provenance=metadata["provenance"], vocabulary_sha256=identity,
+        )
+        require_equal(vocabulary.atom_count, metadata["atom_count"], "vocabulary Atom count")
+        require_equal(vocabulary.embedding_dimension, metadata["embedding_dimension"], "vocabulary dimension")
+        return vocabulary

@@ -1,14 +1,2 @@
-# Core CPU dependencies. Install with: pip install -r requirements.txt
-numpy>=1.23
-pandas>=1.5
-pyarrow>=10
-scikit-learn>=1.2
-scipy>=1.9
-joblib>=1.2
-PyYAML>=6.0
-
-# Flow representation pretraining (PyTorch).
-torch>=2.0
-
-# Atom mapper (gradient-boosted trees).
-xgboost>=2.0
+# Compatibility entry point; runtime dependencies are defined in pyproject.toml.
+-e .[all]

@@ -1,42 +1,46 @@
-# Scripts
+# Command-line reference
 
-Every script is a thin, deterministic command-line wrapper around
-`src/flowatom`. Run them from the repository root; each script bootstraps
-`src/` onto `sys.path`, so `PYTHONPATH` is optional.
+Install the package and use `flowatom <command> --help`, or run
+`python scripts/<name>.py --help` from a source checkout. Both routes call the
+same implementation in `src/flowatom/cli/`. `python -m flowatom` is equivalent
+to the installed console command.
 
-| Script | Purpose |
-| --- | --- |
-| `make_synthetic_data.py` | Generate a small synthetic dataset in the FlowAtom schema. |
-| `materialize_pretraining_shards.py` | Convert a fixed-sequence parquet into mmap-friendly NPY shards. |
-| `pretrain_encoder.py` | Train the MoCo flow encoder. |
-| `build_atom_vocabulary.py` | Build a scenario-specific Atom vocabulary (k-means + XGBoost mapper). |
-| `build_trace_atoms.py` | Extract per-trace Atom responses. |
-| `build_mixture_specs.py` | Build closed-world window specifications. |
-| `build_open_world_specs.py` | Build target-present open-world window specifications. |
-| `train_window_predictor.py` | Train one website-set predictor seed. |
-| `evaluate_frozen.py` | Evaluate a frozen predictor on open-world windows. |
-| `summarize_results.py` | Aggregate Micro-F1 across seeds. |
-| `run_smoke_test.sh` | Run the whole synthetic pipeline end to end. |
+| Installed command | Source wrapper | Purpose |
+| --- | --- | --- |
+| `flowatom run` | `run_experiment.py` | One complete downstream scenario/seed |
+| `flowatom make-synthetic-data` | `make_synthetic_data.py` | Synthetic trace and pretraining data |
+| `flowatom materialize-pretraining-shards` | `materialize_pretraining_shards.py` | Mmap-friendly flow shards |
+| `flowatom pretrain-encoder` | `pretrain_encoder.py` | MoCo flow encoder |
+| `flowatom build-mixture-specs` | `build_mixture_specs.py` | Disjoint trace pools and closed-world windows |
+| `flowatom build-atom-vocabulary` | `build_atom_vocabulary.py` | Training-pool Atoms and mapper |
+| `flowatom build-trace-atoms` | `build_trace_atoms.py` | Trace-level Atom responses |
+| `flowatom train-window-predictor` | `train_window_predictor.py` | Standardizer, predictor and validation-selected decoder |
+| `flowatom build-open-world-specs` | `build_open_world_specs.py` | Target-present test windows |
+| `flowatom evaluate-frozen` | `evaluate_frozen.py` | Frozen closed/open-world evaluation |
+| `flowatom summarize-results` | `summarize_results.py` | Aggregate per-run Micro-F1 |
 
-## Typical order
+`run_smoke_test.sh` generates synthetic data, pretrains a small encoder and calls
+`flowatom run` through its source wrapper. It creates a new output directory
+by default. Set `WORK` to a new or empty directory to choose the location;
+set `PYTHON` to the intended interpreter.
 
+## Dependencies between stages
+
+```text
+external pretraining flows -> shards -> encoder
+monitored traces -> disjoint closed-world specs
+training pool + encoder -> Atom vocabulary
+traces + encoder + vocabulary -> trace responses
+training/validation windows + trace responses -> frozen predictor
+held-out/background windows + matching responses -> evaluation
 ```
-make_synthetic_data.py            (or convert real captures)
-materialize_pretraining_shards.py
-pretrain_encoder.py
-build_atom_vocabulary.py
-build_trace_atoms.py              (monitored traces)
-build_mixture_specs.py
-train_window_predictor.py         (once per seed)
-build_trace_atoms.py              (background traces)
-build_open_world_specs.py
-evaluate_frozen.py
-summarize_results.py
-```
 
-Every script prints a JSON summary to stdout. Errors are raised rather than
-silently skipped: for example, a flow below the minimum nonzero payload packet
-count aborts extraction instead of being dropped silently.
+`build-atom-vocabulary --traces` requires `--specs`; it reads only the declared
+training pool. Short flows are filtered before embedding and flow-budget
+sampling. Zero-evidence traces remain represented. Artifact contracts detect
+incompatible encoders, vocabularies, preprocessing, caches and predictors.
 
-See [`../docs/reproduction.md`](../docs/reproduction.md) for the full command
-sequence and paper-level parameters.
+The full runner records progress in its manifest and writes one stage log per
+command. Individual stages may print progress before a final JSON summary.
+Use output files for machine-readable results rather than treating all stdout
+as a JSON document. See [reproduction](../docs/reproduction.md) for examples.

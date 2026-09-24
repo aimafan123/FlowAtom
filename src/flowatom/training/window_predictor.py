@@ -12,9 +12,11 @@ from typing import Dict, Mapping, Optional, Sequence, Tuple, Union
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, RandomSampler, BatchSampler
 
 from flowatom.atoms.table import TraceAtomTable
+from flowatom.artifacts import ArtifactError, fingerprint, require_equal, write_manifest, verify_manifest
+from flowatom.data import validate_specs, validate_trace_pools
 from flowatom.evaluation import (
     decode_threshold,
     evaluate_by_size,
@@ -101,6 +103,49 @@ def select_threshold(
     return best_threshold, best_f1, best_metrics
 
 
+def validate_training_inputs(specs: Mapping, atoms: TraceAtomTable) -> None:
+    """Check actual trace membership and Atom provenance, not protocol flags."""
+    import pandas as pd
+
+    atoms.validate()
+    pools = validate_trace_pools(specs)
+    if any(not specs[name] for name in ("train", "validation", "test")):
+        raise ValueError("training, validation and test windows must be non-empty")
+    frame = pd.DataFrame({
+        "trace_id": atoms.trace_ids, "label": atoms.labels,
+        "split": ["test" if int(value) in pools["test"] else "train" for value in atoms.trace_ids],
+    })
+    validate_specs(specs, frame)
+    if "trace_dataset_sha256" in specs:
+        require_equal(atoms.source_sha256, specs["trace_dataset_sha256"], "training cache source")
+    fit = atoms.atom_fit
+    if fit.get("source") == "trace_train_pool":
+        require_equal(fit.get("trace_pools_sha256"), fingerprint(specs["trace_pools"]), "Atom training split")
+        require_equal(fit.get("training_trace_ids"), sorted(pools["train"]), "Atom training trace pool")
+    elif fit.get("source") != "independent_unlabeled_pretraining":
+        raise ArtifactError("unknown Atom fit provenance; rebuild the vocabulary")
+
+
+class NonSingletonBatchSampler(BatchSampler):
+    """Merge a singleton tail into the preceding batch without dropping samples."""
+
+    def __iter__(self):
+        pending = None
+        for batch in super().__iter__():
+            if pending is not None:
+                if len(batch) == 1:
+                    yield pending + batch
+                    return
+                yield pending
+            pending = batch
+        if pending is not None:
+            yield pending
+
+    def __len__(self):
+        size = super().__len__()
+        return size - int(len(self.sampler) > 1 and len(self.sampler) % self.batch_size == 1)
+
+
 def train_window_predictor(
     specs: Mapping,
     atoms: TraceAtomTable,
@@ -111,6 +156,9 @@ def train_window_predictor(
 ) -> Dict:
     """Train the decoder with validation-only model and threshold selection."""
 
+    validate_training_inputs(specs, atoms)
+    if len(specs["train"]) < 2 or config.batch_size < 2:
+        raise ValueError("BatchNorm training requires at least two windows and batch_size >= 2")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     seed_everything(config.seed)
@@ -143,14 +191,12 @@ def train_window_predictor(
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
-    loader = DataLoader(
-        TensorDataset(
-            torch.from_numpy(train_x.astype(np.float32)),
-            torch.from_numpy(train_y.astype(np.float32)),
-        ),
-        batch_size=config.batch_size,
-        shuffle=True,
+    training_data = TensorDataset(
+        torch.from_numpy(train_x.astype(np.float32)), torch.from_numpy(train_y.astype(np.float32)),
     )
+    loader = DataLoader(training_data, batch_sampler=NonSingletonBatchSampler(
+        RandomSampler(training_data), config.batch_size, drop_last=False,
+    ))
     validation_truths = [spec["labels"] for spec in validation_specs]
     best: Optional[Dict] = None
     stale = 0
@@ -203,6 +249,9 @@ def train_window_predictor(
         "labels": labels,
         "input_dim": int(train_x.shape[1]),
         "atom_count": int(atoms.atom_count),
+        "feature_contract": atoms.contract,
+        "atom_fit": atoms.atom_fit,
+        "trace_pools_sha256": fingerprint(specs["trace_pools"]),
         "best_epoch": best["epoch"],
         "threshold": best["threshold"],
         "validation_micro_f1": best["validation_micro_f1"],
@@ -212,6 +261,8 @@ def train_window_predictor(
         "protocol": {
             "window_features": "peak (max pooling over flows)",
             "selection_split": "validation",
+            "validation_used_for_atom_fit": False,
+            "trace_disjoint": True,
             "test_used_for_selection": False,
             "website_count_input": False,
         },
@@ -220,6 +271,7 @@ def train_window_predictor(
     (output_dir / "metrics.json").write_text(json.dumps(result, indent=2))
     torch.save(model.state_dict(), output_dir / "model.pt")
     standardizer.save(output_dir / "standardizer.npz")
+    write_manifest(output_dir, ("metrics.json", "model.pt", "standardizer.npz"))
     return result
 
 
@@ -241,7 +293,10 @@ def load_frozen_predictor(run_dir: PathLike, device: str = "cpu") -> FrozenPredi
     """Load a trained decoder and its validation-selected threshold."""
 
     run_dir = Path(run_dir)
+    verify_manifest(run_dir, ("metrics.json", "model.pt", "standardizer.npz"))
     metrics = json.loads((run_dir / "metrics.json").read_text())
+    if not metrics.get("feature_contract"):
+        raise ArtifactError("predictor has no feature contract; retrain it")
     device_object = resolve_device(device)
     labels = [int(value) for value in metrics["labels"]]
     config = metrics["config"]
@@ -278,6 +333,10 @@ def evaluate_frozen(
     device_object = resolve_device(device)
     predictor.model.to(device_object)
     limit = int(max_websites) if max_websites is not None else predictor.max_websites
+    atoms.validate()
+    require_equal(atoms.atom_count, predictor.metrics["input_dim"], "predictor/cache Atom count")
+    require_equal(atoms.contract, predictor.metrics.get("feature_contract"), "predictor/cache feature contract")
+    require_equal(atoms.atom_fit, predictor.metrics.get("atom_fit"), "predictor/cache Atom provenance")
     features, _ = materialize_windows(specs["test"], atoms, predictor.labels)
     features = predictor.standardizer.transform(features)
     probabilities = predict_probabilities(
@@ -319,6 +378,10 @@ def evaluate_specs_grouped(
     limit = int(max_websites) if max_websites is not None else predictor.max_websites
     device_object = resolve_device(device)
     predictor.model.to(device_object)
+    atoms.validate()
+    require_equal(atoms.atom_count, predictor.metrics["input_dim"], "predictor/cache Atom count")
+    require_equal(atoms.contract, predictor.metrics.get("feature_contract"), "predictor/cache feature contract")
+    require_equal(atoms.atom_fit, predictor.metrics.get("atom_fit"), "predictor/cache Atom provenance")
     features, _ = materialize_windows(specs["test"], atoms, predictor.labels)
     features = predictor.standardizer.transform(features)
     probabilities = predict_probabilities(

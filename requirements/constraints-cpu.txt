@@ -1,0 +1,11 @@
+# Direct runtime dependencies for Linux CPU checks, Python 3.9 / 3.12.
+# Install torch from its CPU index first; see docs/environment.md.
+numpy==1.26.4
+pandas==2.3.3
+pyarrow==21.0.0
+scikit-learn==1.6.0
+scipy==1.13.1
+joblib==1.4.2
+PyYAML==6.0.2
+torch==2.5.1
+xgboost==2.1.4

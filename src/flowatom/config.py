@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Union
 
 PathLike = Union[str, Path]
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "mainline.yaml"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "mainline.yaml"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "schema_version": 1,

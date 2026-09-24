@@ -80,7 +80,8 @@ def validate_trace_frame(frame) -> TraceDatasetSummary:
         raise DatasetValidationError(
             f"unexpected trace splits: {sorted(actual_splits - ALLOWED_SPLITS)}"
         )
-    if int(frame.groupby("label")["site"].nunique().max()) != 1:
+    monitored = frame[frame["label"] >= 0]
+    if (monitored.groupby("label")["site"].nunique() != 1).any():
         raise DatasetValidationError("each label must map to exactly one site")
 
     flow_count = 0

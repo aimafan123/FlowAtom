@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "flowatom"
-version = "1.0.0"
+dynamic = ["version"]
 description = "FlowAtom: Atom-based evidence aggregation for multi-label website fingerprinting"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "Apache-2.0" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   { name = "Chongru Fan" },
 ]
@@ -32,6 +33,13 @@ dependencies = [
   "PyYAML>=6.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/aimafan123/FlowAtom"
+Issues = "https://github.com/aimafan123/FlowAtom/issues"
+
+[project.scripts]
+flowatom = "flowatom.cli:main"
+
 [project.optional-dependencies]
 ml = ["torch>=2.0"]
 atoms = ["xgboost>=2.0"]
@@ -40,8 +48,23 @@ all = [
   "xgboost>=2.0",
 ]
 
+dev = ["build>=1.2", "twine>=6", "ruff>=0.8,<1"]
+
 [tool.setuptools]
 package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "flowatom.__version__"}
+
+[tool.setuptools.package-data]
+flowatom = ["configs/*.yaml"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]

@@ -32,3 +32,9 @@ artifacts/
 *.joblib
 
 .DS_Store
+
+# Test outputs and generated experiment specifications
+.pytest_cache/
+htmlcov/
+coverage.xml
+specs/

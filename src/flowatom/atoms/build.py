@@ -50,6 +50,7 @@ def build_atom_vocabulary(
     embeddings: np.ndarray,
     output_dir: PathLike,
     *,
+    provenance: Mapping[str, Any],
     clusters: int = 1200,
     minimum_cluster_size: int = 50,
     scaling: bool = False,
@@ -143,7 +144,7 @@ def build_atom_vocabulary(
     )
     classifier.fit(normalized[fit_indices], effective_labels[fit_indices])
 
-    vocabulary = AtomVocabulary(classifier=classifier, scaler=scaler, classifier_type="xgboost")
+    vocabulary = AtomVocabulary(classifier=classifier, scaler=scaler, classifier_type="xgboost", provenance=dict(provenance))
     probabilities = counts / counts.sum()
     used = probabilities > 0
     entropy = float(-(probabilities[used] * np.log(probabilities[used])).sum())

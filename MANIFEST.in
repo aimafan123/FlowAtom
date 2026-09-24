@@ -1,0 +1,12 @@
+include LICENSE README.md requirements.txt
+recursive-include configs *.yaml
+recursive-include docs *.md *.json
+recursive-include requirements *.txt
+recursive-include scripts *.py *.sh *.md
+recursive-include tests *.py
+recursive-include src/flowatom/configs *.yaml
+prune artifacts
+prune runs
+prune data
+prune .github
+global-exclude __pycache__ *.py[cod] .DS_Store

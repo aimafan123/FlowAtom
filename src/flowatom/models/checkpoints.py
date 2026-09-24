@@ -8,6 +8,7 @@ from typing import Any, Dict, Mapping, Union
 import torch
 
 from flowatom.models.encoder import DFMiniEncoder
+from flowatom.artifacts import file_sha256
 
 PathLike = Union[str, Path]
 
@@ -74,6 +75,11 @@ def load_pretrained_encoder(
         raise FileNotFoundError(checkpoint_path)
     device = torch.device(device)
     payload = _load_torch(checkpoint_path, device)
+    if isinstance(payload, Mapping) and "input_length" in payload:
+        if int(payload["input_length"]) != int(input_length):
+            raise CheckpointError(
+                f"checkpoint input_length {payload['input_length']} != requested {input_length}"
+            )
     if isinstance(payload, Mapping) and "state_dict" in payload:
         state = _strip_moco_prefix(payload["state_dict"])
     elif isinstance(payload, Mapping):
@@ -101,6 +107,7 @@ def load_pretrained_encoder(
         )
     model.to(device)
     model.eval()
+    model.checkpoint_sha256 = file_sha256(checkpoint_path)
     return model
 
 

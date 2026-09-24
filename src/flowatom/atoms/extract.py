@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from flowatom.atoms.table import TraceAtomError, TraceAtomTable
+from flowatom.artifacts import require_equal
 from flowatom.atoms.vocabulary import AtomVocabulary
 from flowatom.encoding import encode_batch
 from flowatom.representation import REPRESENTATIONS, flow_representation
@@ -37,6 +38,7 @@ def _flush(
     encoder,
     vocabulary: AtomVocabulary,
     peak: np.ndarray,
+    flow_count: np.ndarray,
     device: torch.device,
     confidence_threshold: float,
 ) -> int:
@@ -45,6 +47,7 @@ def _flush(
     probabilities = vocabulary.predict_proba(encode_batch(sequences, encoder, device))
     retained = probabilities.max(axis=1) >= float(confidence_threshold)
     if np.any(retained):
+        np.add.at(flow_count, np.asarray(trace_indices, dtype=np.int64)[retained], 1)
         np.maximum.at(
             peak,
             np.asarray(trace_indices, dtype=np.int64)[retained],
@@ -80,6 +83,26 @@ def extract_trace_atoms(
     }:
         raise TraceAtomError(f"{config.representation} requires direction_flows")
 
+    if not 0.0 <= config.confidence_threshold <= 1.0:
+        raise TraceAtomError("confidence_threshold must lie in [0, 1]")
+    if config.minimum_nonzero_payload_packets <= 0:
+        raise TraceAtomError("minimum_nonzero_payload_packets must be positive")
+    expected = {
+        "encoder_sha256": getattr(encoder, "checkpoint_sha256", None),
+        "representation": config.representation,
+        "input_length": config.input_length,
+        "minimum_nonzero_payload_packets": config.minimum_nonzero_payload_packets,
+    }
+    if not expected["encoder_sha256"] or not vocabulary.vocabulary_sha256:
+        raise TraceAtomError("load a fingerprinted encoder and vocabulary before extraction")
+    for key, value in expected.items():
+        require_equal(vocabulary.provenance.get(key), value, f"vocabulary {key}")
+    contract = {
+        **expected, "vocabulary_sha256": vocabulary.vocabulary_sha256,
+        "confidence_threshold": float(config.confidence_threshold),
+        "max_flows_per_trace": config.max_flows_per_trace,
+        "flow_sampling_seed": config.flow_sampling_seed if config.max_flows_per_trace else None,
+    }
     device = torch.device(config.device)
     encoder.to(device).eval()
     trace_count = len(frame)
@@ -94,28 +117,17 @@ def extract_trace_atoms(
     trace_indices: List[int] = []
     retained_total = 0
     total_flows = 0
+    short_flows = 0
     direction_column = frame.get("direction_flows")
 
     for trace_index, payloads in enumerate(frame["payload_flows"]):
         directions = None if direction_column is None else direction_column.iloc[trace_index]
         if directions is not None and len(payloads) != len(directions):
             raise TraceAtomError(f"trace {trace_index} has unaligned flow collections")
-        flow_indices = np.arange(len(payloads), dtype=np.int64)
-        if config.max_flows_per_trace and len(flow_indices) > config.max_flows_per_trace:
-            trace_id = int(trace_ids[trace_index])
-            rng = np.random.default_rng(config.flow_sampling_seed + trace_id)
-            flow_indices = np.sort(
-                rng.choice(flow_indices, size=config.max_flows_per_trace, replace=False)
-            )
-        flow_count[trace_index] = len(flow_indices)
-        total_flows += len(flow_indices)
-        for flow_index in flow_indices:
-            payload = payloads[int(flow_index)]
-            direction = (
-                [1] * len(payload)
-                if directions is None
-                else directions[int(flow_index)]
-            )
+        total_flows += len(payloads)
+        eligible = []
+        for flow_index, payload in enumerate(payloads):
+            direction = [1] * len(payload) if directions is None else directions[flow_index]
             sequence = flow_representation(
                 payload,
                 direction,
@@ -124,10 +136,16 @@ def extract_trace_atoms(
                 min_payload_packets=config.minimum_nonzero_payload_packets,
             )
             if sequence is None:
-                raise TraceAtomError(
-                    f"trace {trace_index} flow {int(flow_index)} violates "
-                    "minimum_nonzero_payload_packets"
-                )
+                short_flows += 1
+                continue
+            eligible.append(sequence)
+        # Apply budgets to eligible flows, so short flows never consume a slot.
+        flow_indices = np.arange(len(eligible), dtype=np.int64)
+        if config.max_flows_per_trace and len(flow_indices) > config.max_flows_per_trace:
+            rng = np.random.default_rng(config.flow_sampling_seed + int(trace_ids[trace_index]))
+            flow_indices = np.sort(rng.choice(flow_indices, size=config.max_flows_per_trace, replace=False))
+        for flow_index in flow_indices:
+            sequence = eligible[int(flow_index)]
             sequences.append(sequence)
             trace_indices.append(trace_index)
             if len(sequences) >= config.batch_size:
@@ -137,6 +155,7 @@ def extract_trace_atoms(
                     encoder,
                     vocabulary,
                     peak,
+                    flow_count,
                     device,
                     config.confidence_threshold,
                 )
@@ -146,6 +165,7 @@ def extract_trace_atoms(
         encoder,
         vocabulary,
         peak,
+        flow_count,
         device,
         config.confidence_threshold,
     )
@@ -160,6 +180,9 @@ def extract_trace_atoms(
         total_flow_count=int(total_flows),
         representation=config.representation,
         input_length=int(config.input_length),
+        short_flow_count=short_flows,
+        contract=contract,
+        atom_fit=dict(vocabulary.provenance["atom_fit"]),
     )
     table.validate()
     return table
